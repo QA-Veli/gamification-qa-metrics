@@ -1,0 +1,32 @@
+name: Weekly QA Bug Report
+
+on:
+  schedule:
+    # Запускається щопятниці о 9:00 AM UTC
+    # Змінюйте час за потребою (формат: хвилини години день місяц день_тижня)
+    - cron: '0 9 * * 5'
+  
+  # Також можно запустити вручну
+  workflow_dispatch:
+
+jobs:
+  qa-report:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      
+      - name: Run QA Report
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+        run: python qa_report.py
