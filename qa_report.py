@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-QA Bug Report Script
+QA Weekly Report Script
 Reads bugs from Google Sheets and test results from Slack, then sends weekly report
 """
 
@@ -9,7 +9,6 @@ import json
 import re
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
-from google.auth.transport.requests import Request
 import gspread
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
@@ -19,7 +18,7 @@ SPREADSHEET_ID = "1u4fHAIdRckZDo9psDoJA3uVYC__aiZWmo7OlZpJctRc"
 SHEET_NAMES = ["Tournaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget Settings", "Media Library"]
 DATE_COLUMN = "Date"
 SLACK_REPORT_CHANNEL = "#gamification-qa-metrics"
-SLACK_TEST_CHANNEL = "#gamification-tests"
+SLACK_TEST_CHANNEL = "gamification-tests"  # Channel to read test results from
 
 def get_google_sheets_client(credentials_json):
     """Initialize Google Sheets client"""
@@ -71,6 +70,113 @@ def get_bugs_from_sheet(gc, sheet_name):
         print(f"Error reading sheet '{sheet_name}': {e}")
         return 0
 
+def get_test_results_from_slack(slack_client):
+    """Read test result messages from Slack channel for the last 7 days"""
+    try:
+        # Get messages from last 7 days
+        seven_days_ago = datetime.now() - timedelta(days=7)
+        oldest_timestamp = seven_days_ago.timestamp()
+
+        print(f"📖 Reading messages from #{SLACK_TEST_CHANNEL}...")
+
+        # Try to read channel history
+        try:
+            messages = slack_client.conversations_history(
+                channel=SLACK_TEST_CHANNEL,
+                oldest=oldest_timestamp,
+                limit=100
+            )
+        except SlackApiError as e:
+            print(f"⚠️  Error reading channel: {e}")
+            print(f"💡 Make sure bot is added to #{SLACK_TEST_CHANNEL}")
+            return []
+
+        test_results = []
+        message_count = len(messages.get('messages', []))
+        print(f"   Found {message_count} messages in the last 7 days")
+
+        for message in messages.get('messages', []):
+            # Skip messages without text
+            if 'text' not in message:
+                continue
+
+            text = message['text']
+
+            # Parse test result if it contains test info
+            if 'tests' in text.lower() and ('passed' in text.lower() or 'failed' in text.lower()):
+                parsed = parse_test_message(text)
+                if parsed:
+                    parsed['timestamp'] = message.get('ts')
+                    test_results.append(parsed)
+
+        print(f"   Parsed {len(test_results)} test results")
+        return test_results
+
+    except Exception as e:
+        print(f"❌ Error reading Slack test channel: {e}")
+        return []
+
+def parse_test_message(message_text):
+    """Parse test results from message text"""
+    try:
+        # Pattern: "X tests from Y shards: Z passed, W failed, V flaky"
+        pattern = r'(\d+)\s+tests?\s+from\s+\d+\s+shards?:\s+(\d+)\s+passed,\s+(\d+)\s+failed,?\s+(\d+)\s+flaky'
+        match = re.search(pattern, message_text, re.IGNORECASE)
+
+        if match:
+            total_tests = int(match.group(1))
+            passed = int(match.group(2))
+            failed = int(match.group(3))
+            flaky = int(match.group(4))
+
+            # Parse test runtime
+            runtime_pattern = r'Test runtime:\s+([\d.]+[smh]+)'
+            runtime_match = re.search(runtime_pattern, message_text, re.IGNORECASE)
+            runtime = runtime_match.group(1) if runtime_match else "N/A"
+
+            # Calculate pass rate: passed / total
+            pass_rate = (passed / total_tests * 100) if total_tests > 0 else 0
+
+            return {
+                'total': total_tests,
+                'passed': passed,
+                'failed': failed,
+                'flaky': flaky,
+                'pass_rate': pass_rate,
+                'runtime': runtime
+            }
+    except Exception as e:
+        print(f"Error parsing test message: {e}")
+
+    return None
+
+def aggregate_test_results(test_results_list):
+    """Aggregate test results from multiple runs"""
+    if not test_results_list:
+        return None
+
+    total_passed = sum(r['passed'] for r in test_results_list)
+    total_failed = sum(r['failed'] for r in test_results_list)
+    total_flaky = sum(r['flaky'] for r in test_results_list)
+    total_tests = sum(r['total'] for r in test_results_list)
+
+    overall_pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
+
+    # Count successes vs failures
+    successes = sum(1 for r in test_results_list if r['failed'] == 0)
+    failures = len(test_results_list) - successes
+
+    return {
+        'total_runs': len(test_results_list),
+        'total_tests': total_tests,
+        'total_passed': total_passed,
+        'total_failed': total_failed,
+        'total_flaky': total_flaky,
+        'pass_rate': overall_pass_rate,
+        'successful_runs': successes,
+        'failed_runs': failures
+    }
+
 def create_slack_message(bugs_by_sheet, test_aggregation):
     """Create formatted Slack message with bugs and test results"""
     total_bugs = sum(bugs_by_sheet.values())
@@ -112,7 +218,13 @@ def create_slack_message(bugs_by_sheet, test_aggregation):
 
     # Section 2: Test Results
     if test_aggregation:
-        pass_rate_emoji = "🟢" if test_aggregation['pass_rate'] >= 95 else "🟡" if test_aggregation['pass_rate'] >= 80 else "🔴"
+        # Color code based on pass rate
+        if test_aggregation['pass_rate'] >= 95:
+            pass_rate_emoji = "🟢"
+        elif test_aggregation['pass_rate'] >= 80:
+            pass_rate_emoji = "🟡"
+        else:
+            pass_rate_emoji = "🔴"
 
         blocks.append({
             "type": "section",
@@ -164,151 +276,6 @@ def create_slack_message(bugs_by_sheet, test_aggregation):
 
     return blocks
 
-def get_test_results_from_slack(slack_client):
-    """Read test result messages from Slack private channel for the last 7 days"""
-    try:
-        # Get messages from last 7 days
-        seven_days_ago = datetime.now() - timedelta(days=7)
-        oldest_timestamp = seven_days_ago.timestamp()
-
-        channel_name = SLACK_TEST_CHANNEL.lstrip('#')
-
-        try:
-            # Try to list private groups (old API but still supported)
-            groups = slack_client.groups_list()
-            group_id = None
-
-            for group in groups.get('groups', []):
-                if group['name'] == channel_name:
-                    group_id = group['id']
-                    break
-
-            if not group_id:
-                print(f"⚠️  Private channel '{channel_name}' not found or bot not member")
-                return []
-
-            # Get history from private channel
-            messages = slack_client.groups_history(
-                channel=group_id,
-                oldest=oldest_timestamp,
-                count=100
-            )
-
-        except SlackApiError as e:
-            if 'unknown_method' in str(e):
-                # If groups API doesn't work, try conversations_list with public channels
-                print(f"⚠️  groups API not available, trying alternative method...")
-                try:
-                    conversations = slack_client.conversations_list()
-                    channel_id = None
-
-                    for conv in conversations.get('channels', []):
-                        if conv['name'] == channel_name:
-                            channel_id = conv['id']
-                            break
-
-                    if not channel_id:
-                        print(f"⚠️  Channel '{channel_name}' not found")
-                        return []
-
-                    messages = slack_client.conversations_history(
-                        channel=channel_id,
-                        oldest=oldest_timestamp,
-                        limit=100
-                    )
-                except Exception as e2:
-                    print(f"❌ Could not read channel {SLACK_TEST_CHANNEL}: {e2}")
-                    return []
-            else:
-                print(f"❌ Error: {e}")
-                return []
-
-        test_results = []
-
-        for message in messages.get('messages', []):
-            # Skip messages without text
-            if 'text' not in message:
-                continue
-
-            text = message['text']
-
-            # Parse test result if it contains test info
-            if 'tests' in text.lower() and ('passed' in text.lower() or 'failed' in text.lower()):
-                parsed = parse_test_message(text)
-                if parsed:
-                    parsed['timestamp'] = message.get('ts')
-                    test_results.append(parsed)
-
-        return test_results
-    except SlackApiError as e:
-        print(f"Error reading Slack test channel: {e}")
-        return []
-
-def parse_test_message(message_text):
-    """Parse test results from message text"""
-    try:
-        # Pattern: "X tests from Y shards: Z passed, W failed, V flaky"
-        pattern = r'(\d+)\s+tests?\s+from\s+\d+\s+shards?:\s+(\d+)\s+passed,\s+(\d+)\s+failed,?\s+(\d+)\s+flaky'
-        match = re.search(pattern, message_text, re.IGNORECASE)
-
-        if match:
-            total_tests = int(match.group(1))
-            passed = int(match.group(2))
-            failed = int(match.group(3))
-            flaky = int(match.group(4))
-
-            # Parse test runtime
-            runtime_pattern = r'Test runtime:\s+([\d.]+[smh]+)'
-            runtime_match = re.search(runtime_pattern, message_text, re.IGNORECASE)
-            runtime = runtime_match.group(1) if runtime_match else "N/A"
-
-            # Calculate pass rate
-            pass_rate = (passed / total_tests * 100) if total_tests > 0 else 0
-
-            # Get status
-            status = "✅ Succeeded" if failed == 0 else "❌ Failed"
-
-            return {
-                'total': total_tests,
-                'passed': passed,
-                'failed': failed,
-                'flaky': flaky,
-                'pass_rate': pass_rate,
-                'runtime': runtime,
-                'status': status
-            }
-    except Exception as e:
-        print(f"Error parsing test message: {e}")
-
-    return None
-
-def aggregate_test_results(test_results_list):
-    """Aggregate test results from multiple runs"""
-    if not test_results_list:
-        return None
-
-    total_passed = sum(r['passed'] for r in test_results_list)
-    total_failed = sum(r['failed'] for r in test_results_list)
-    total_flaky = sum(r['flaky'] for r in test_results_list)
-    total_tests = sum(r['total'] for r in test_results_list)
-
-    overall_pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
-
-    # Count successes vs failures
-    successes = sum(1 for r in test_results_list if r['failed'] == 0)
-    failures = len(test_results_list) - successes
-
-    return {
-        'total_runs': len(test_results_list),
-        'total_tests': total_tests,
-        'total_passed': total_passed,
-        'total_failed': total_failed,
-        'total_flaky': total_flaky,
-        'pass_rate': overall_pass_rate,
-        'successful_runs': successes,
-        'failed_runs': failures
-    }
-
 def send_slack_message(slack_client, channel, blocks):
     """Send message to Slack channel"""
     try:
@@ -335,30 +302,30 @@ def main():
             print("  - SLACK_BOT_TOKEN")
         exit(1)
 
-    print("🚀 Starting QA Report...")
+    print("🚀 Starting QA Weekly Report...")
 
     # Initialize clients
     try:
         gc = get_google_sheets_client(google_credentials)
         slack_client = get_slack_client(slack_token)
-        print("✅ Clients initialized")
+        print("✅ Clients initialized\n")
     except Exception as e:
         print(f"❌ Failed to initialize clients: {e}")
         exit(1)
 
     # Collect bugs from all sheets
-    print("\n📊 Collecting bug data...")
+    print("📊 Collecting bug data...")
     bugs_by_sheet = {}
     for sheet_name in SHEET_NAMES:
-        print(f"📄 Reading '{sheet_name}'...")
+        print(f"   📄 Reading '{sheet_name}'...")
         bug_count = get_bugs_from_sheet(gc, sheet_name)
         bugs_by_sheet[sheet_name] = bug_count
-        print(f"   Found {bug_count} bug{'s' if bug_count != 1 else ''}")
+        if bug_count > 0:
+            print(f"      Found {bug_count} bug{'s' if bug_count != 1 else ''}")
 
     # Collect test results from Slack
     print("\n🧪 Collecting test results...")
     test_results = get_test_results_from_slack(slack_client)
-    print(f"   Found {len(test_results)} test run(s)")
 
     test_aggregation = aggregate_test_results(test_results)
     if test_aggregation:
@@ -367,11 +334,11 @@ def main():
         print(f"   Failed runs: {test_aggregation['failed_runs']}")
 
     # Create and send message
-    print("\n📤 Creating report...")
+    print("\n📤 Creating and sending report...")
     blocks = create_slack_message(bugs_by_sheet, test_aggregation)
     send_slack_message(slack_client, SLACK_REPORT_CHANNEL, blocks)
-    
-    print("✅ Report completed!")
+
+    print("\n✅ Report completed!")
 
 if __name__ == "__main__":
     main()
