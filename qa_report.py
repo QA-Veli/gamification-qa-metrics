@@ -16,7 +16,7 @@ from slack_sdk.errors import SlackApiError
 
 # Constants
 SPREADSHEET_ID = "1u4fHAIdRckZDo9psDoJA3uVYC__aiZWmo7OlZpJctRc"
-SHEET_NAMES = ["Toyrnaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget settings", "Media Library"]
+SHEET_NAMES = ["Tournaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget Settings", "Media Library"]
 DATE_COLUMN = "Date"
 SLACK_REPORT_CHANNEL = "#gamification-qa-metrics"
 SLACK_TEST_CHANNEL = "#gamification-tests"
@@ -165,35 +165,63 @@ def create_slack_message(bugs_by_sheet, test_aggregation):
     return blocks
 
 def get_test_results_from_slack(slack_client):
-    """Read test result messages from Slack channel (public or private) for the last 7 days"""
+    """Read test result messages from Slack private channel for the last 7 days"""
     try:
         # Get messages from last 7 days
         seven_days_ago = datetime.now() - timedelta(days=7)
         oldest_timestamp = seven_days_ago.timestamp()
 
-        channel = SLACK_TEST_CHANNEL.lstrip('#')
+        channel_name = SLACK_TEST_CHANNEL.lstrip('#')
 
         try:
-            # Try public channel first
-            messages = slack_client.conversations_history(
-                channel=channel,
+            # Try to list private groups (old API but still supported)
+            groups = slack_client.groups_list()
+            group_id = None
+
+            for group in groups.get('groups', []):
+                if group['name'] == channel_name:
+                    group_id = group['id']
+                    break
+
+            if not group_id:
+                print(f"⚠️  Private channel '{channel_name}' not found or bot not member")
+                return []
+
+            # Get history from private channel
+            messages = slack_client.groups_history(
+                channel=group_id,
                 oldest=oldest_timestamp,
-                limit=100
+                count=100
             )
+
         except SlackApiError as e:
-            if 'channel_not_found' in str(e) or 'not_in_channel' in str(e):
-                # Try private channel (groups)
+            if 'unknown_method' in str(e):
+                # If groups API doesn't work, try conversations_list with public channels
+                print(f"⚠️  groups API not available, trying alternative method...")
                 try:
-                    messages = slack_client.groups_history(
-                        channel=channel,
+                    conversations = slack_client.conversations_list()
+                    channel_id = None
+
+                    for conv in conversations.get('channels', []):
+                        if conv['name'] == channel_name:
+                            channel_id = conv['id']
+                            break
+
+                    if not channel_id:
+                        print(f"⚠️  Channel '{channel_name}' not found")
+                        return []
+
+                    messages = slack_client.conversations_history(
+                        channel=channel_id,
                         oldest=oldest_timestamp,
-                        count=100
+                        limit=100
                     )
-                except SlackApiError as e2:
+                except Exception as e2:
                     print(f"❌ Could not read channel {SLACK_TEST_CHANNEL}: {e2}")
                     return []
             else:
-                raise
+                print(f"❌ Error: {e}")
+                return []
 
         test_results = []
 
