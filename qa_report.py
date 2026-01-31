@@ -15,10 +15,10 @@ from slack_sdk.errors import SlackApiError
 
 # Constants
 SPREADSHEET_ID = "1u4fHAIdRckZDo9psDoJA3uVYC__aiZWmo7OlZpJctRc"
-SHEET_NAMES = ["Tournaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget Settings", "Media Library"]
+SHEET_NAMES = ["Toyrnaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget settings", "Media Library"]
 DATE_COLUMN = "Date"
 SLACK_REPORT_CHANNEL = "#gamification-qa-metrics"
-SLACK_TEST_CHANNEL = "gamification-tests"  # Channel to read test results from
+SLACK_TEST_CHANNEL_ID = "C085NU28D9N"  # gamification-tests channel ID
 
 def get_google_sheets_client(credentials_json):
     """Initialize Google Sheets client"""
@@ -77,18 +77,17 @@ def get_test_results_from_slack(slack_client):
         seven_days_ago = datetime.now() - timedelta(days=7)
         oldest_timestamp = seven_days_ago.timestamp()
 
-        print(f"📖 Reading messages from #{SLACK_TEST_CHANNEL}...")
+        print(f"📖 Reading messages from channel ID: {SLACK_TEST_CHANNEL_ID}...")
 
-        # Try to read channel history
+        # Use channel ID directly
         try:
             messages = slack_client.conversations_history(
-                channel=SLACK_TEST_CHANNEL,
+                channel=SLACK_TEST_CHANNEL_ID,
                 oldest=oldest_timestamp,
                 limit=100
             )
         except SlackApiError as e:
             print(f"⚠️  Error reading channel: {e}")
-            print(f"💡 Make sure bot is added to #{SLACK_TEST_CHANNEL}")
             return []
 
         test_results = []
