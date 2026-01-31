@@ -16,7 +16,7 @@ from slack_sdk.errors import SlackApiError
 
 # Constants
 SPREADSHEET_ID = "1u4fHAIdRckZDo9psDoJA3uVYC__aiZWmo7OlZpJctRc"
-SHEET_NAMES = ["Tournaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget Settings", "Media Library"]
+SHEET_NAMES = ["Toyrnaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget settings", "Media Library"]
 DATE_COLUMN = "Date"
 SLACK_REPORT_CHANNEL = "#gamification-qa-metrics"
 SLACK_TEST_CHANNEL = "#gamification-tests"
@@ -165,29 +165,33 @@ def create_slack_message(bugs_by_sheet, test_aggregation):
     return blocks
 
 def get_test_results_from_slack(slack_client):
-    """Read test result messages from Slack channel for the last 7 days"""
+    """Read test result messages from Slack channel (public or private) for the last 7 days"""
     try:
         # Get messages from last 7 days
         seven_days_ago = datetime.now() - timedelta(days=7)
         oldest_timestamp = seven_days_ago.timestamp()
 
-        # Try to use channel name directly (Slack usually accepts both # format and channel ID)
         channel = SLACK_TEST_CHANNEL.lstrip('#')
 
         try:
+            # Try public channel first
             messages = slack_client.conversations_history(
                 channel=channel,
                 oldest=oldest_timestamp,
                 limit=100
             )
         except SlackApiError as e:
-            if 'channel_not_found' in str(e):
-                # Try with # prefix
-                messages = slack_client.conversations_history(
-                    channel=SLACK_TEST_CHANNEL,
-                    oldest=oldest_timestamp,
-                    limit=100
-                )
+            if 'channel_not_found' in str(e) or 'not_in_channel' in str(e):
+                # Try private channel (groups)
+                try:
+                    messages = slack_client.groups_history(
+                        channel=channel,
+                        oldest=oldest_timestamp,
+                        count=100
+                    )
+                except SlackApiError as e2:
+                    print(f"❌ Could not read channel {SLACK_TEST_CHANNEL}: {e2}")
+                    return []
             else:
                 raise
 
