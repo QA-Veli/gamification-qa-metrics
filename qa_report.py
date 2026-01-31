@@ -15,7 +15,7 @@ from slack_sdk.errors import SlackApiError
 
 # Constants
 SPREADSHEET_ID = "1u4fHAIdRckZDo9psDoJA3uVYC__aiZWmo7OlZpJctRc"
-SHEET_NAMES = ["Tournaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget Settings", "Media Library"]
+SHEET_NAMES = ["Tournaments", "Loyalty Program", "Rakeback", "Secretbox", "Boosters", "Widget Settings", "Media Library", "Bugs from prod"]
 DATE_COLUMN = "Date"
 SLACK_REPORT_CHANNEL = "#gamification-qa-metrics"
 SLACK_TEST_CHANNEL_ID = "C085NU28D9N"  # gamification-tests channel ID
